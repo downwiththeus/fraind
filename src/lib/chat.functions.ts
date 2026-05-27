@@ -168,7 +168,7 @@ export const getCheckIn = createServerFn({ method: "GET" })
 
     const [{ data: profile }, { data: memories }, { data: recent }] = await Promise.all([
       supabase.from("profiles").select("display_name").eq("user_id", userId).maybeSingle(),
-      supabase.from("memories").select("content").order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(20),
+      supabase.from("memories").select("content,importance").order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(20),
       supabase.from("messages").select("content,created_at").eq("role", "user").order("created_at", { ascending: false }).limit(3),
     ]);
 
