@@ -43,3 +43,25 @@ export const deleteMemory = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return { ok: true };
   });
+
+export const updateMemory = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({
+    id: z.string().uuid(),
+    content: z.string().min(2).max(500).optional(),
+    kind: z.string().max(40).optional(),
+    importance: z.number().int().min(1).max(5).optional(),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase } = context;
+    const { id, ...patch } = data;
+    const { data: row, error } = await supabase
+      .from("memories")
+      .update(patch)
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return row;
+  });
+
