@@ -6,6 +6,13 @@ import { buildSystemPrompt } from "./personality";
 const MODEL = "google/gemini-3-flash-preview";
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 
+function makeSlug() {
+  const chars = "abcdefghjkmnpqrstuvwxyz23456789";
+  let s = "";
+  for (let i = 0; i < 10; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return s;
+}
+
 /** Generate provocative "spark seeds" — short prompts for thought experiments. */
 export const generateSparks = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
@@ -89,29 +96,131 @@ ${memBlock}` },
     return { sparks: (args.sparks ?? []).slice(0, 6) as { title: string; prompt: string; tag: string }[] };
   });
 
-/** Create a new playground conversation seeded with a spark prompt and Lovable's opening reply. */
-export const playSpark = createServerFn({ method: "POST" })
+/** Save a spark as a shareable seed (returns slug). */
+export const shareSpark = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((d) => z.object({
-    title: z.string().min(1).max(80),
+    title: z.string().min(1).max(120),
     prompt: z.string().min(2).max(2000),
+    tag: z.string().max(40).optional(),
   }).parse(d))
   .handler(async ({ context, data }) => {
     const { supabase, userId } = context;
+    // Try up to 3 times for unique slug
+    for (let i = 0; i < 3; i++) {
+      const slug = makeSlug();
+      const { data: row, error } = await supabase
+        .from("spark_seeds")
+        .insert({ owner_id: userId, slug, title: data.title, prompt: data.prompt, tag: data.tag ?? null })
+        .select()
+        .single();
+      if (!error) return row;
+      if (!String(error.message).includes("duplicate")) throw new Error(error.message);
+    }
+    throw new Error("Could not generate a unique slug, try again.");
+  });
+
+/** Create or reopen a conversation from a saved seed. */
+export const playSeed = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({ seedId: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase, userId } = context;
+    const { data: seed, error: sErr } = await supabase.from("spark_seeds").select("*").eq("id", data.seedId).maybeSingle();
+    if (sErr) throw new Error(sErr.message);
+    if (!seed) throw new Error("Seed not found");
+
+    // Reopen existing thread for this user/seed if any
+    const { data: existing } = await supabase
+      .from("conversations")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("seed_id", seed.id)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (existing) return existing;
+
     const { data: conv, error } = await supabase
       .from("conversations")
-      .insert({ user_id: userId, mode: "playground", title: data.title })
+      .insert({ user_id: userId, mode: "playground", title: seed.title, seed_id: seed.id })
       .select()
       .single();
     if (error) throw new Error(error.message);
 
-    // Seed the conversation with the spark as Lovable's opener so the user can yes-and right away.
+    await supabase.from("messages").insert({
+      conversation_id: conv.id,
+      user_id: userId,
+      role: "assistant",
+      content: seed.prompt,
+    });
+    return conv;
+  });
+
+/** Legacy: play a spark directly (creates seed under the hood for shareability). */
+export const playSpark = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({
+    title: z.string().min(1).max(120),
+    prompt: z.string().min(2).max(2000),
+    tag: z.string().max(40).optional(),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase, userId } = context;
+    let seedId: string | null = null;
+    for (let i = 0; i < 3; i++) {
+      const slug = makeSlug();
+      const { data: seed, error } = await supabase
+        .from("spark_seeds")
+        .insert({ owner_id: userId, slug, title: data.title, prompt: data.prompt, tag: data.tag ?? null })
+        .select("id")
+        .single();
+      if (!error) { seedId = seed.id; break; }
+      if (!String(error.message).includes("duplicate")) break;
+    }
+
+    const { data: conv, error } = await supabase
+      .from("conversations")
+      .insert({ user_id: userId, mode: "playground", title: data.title, seed_id: seedId })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+
     await supabase.from("messages").insert({
       conversation_id: conv.id,
       user_id: userId,
       role: "assistant",
       content: data.prompt,
     });
-
     return conv;
+  });
+
+/** Public: fetch a shared seed by slug (no auth required). */
+export const getSharedSeed = createServerFn({ method: "GET" })
+  .inputValidator((d) => z.object({ slug: z.string().min(1).max(60) }).parse(d))
+  .handler(async ({ data }) => {
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+    const { data: row, error } = await supabaseAdmin
+      .from("spark_seeds")
+      .select("id,slug,title,prompt,tag,created_at")
+      .eq("slug", data.slug)
+      .maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!row) throw new Error("Seed not found");
+    return row;
+  });
+
+/** List all spark seeds the current user has created or played. */
+export const listMySeeds = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const { supabase, userId } = context;
+    const { data, error } = await supabase
+      .from("spark_seeds")
+      .select("id,slug,title,prompt,tag,created_at")
+      .eq("owner_id", userId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (error) throw new Error(error.message);
+    return data ?? [];
   });

@@ -9,6 +9,7 @@ export const listMemories = createServerFn({ method: "GET" })
     const { data, error } = await supabase
       .from("memories")
       .select("*")
+      .order("pinned", { ascending: false })
       .order("importance", { ascending: false })
       .order("created_at", { ascending: false })
       .limit(200);
@@ -39,6 +40,8 @@ export const deleteMemory = createServerFn({ method: "POST" })
   .inputValidator((d) => z.object({ id: z.string().uuid() }).parse(d))
   .handler(async ({ context, data }) => {
     const { supabase } = context;
+    const { data: existing } = await supabase.from("memories").select("pinned").eq("id", data.id).maybeSingle();
+    if (existing?.pinned) throw new Error("This memory is pinned. Unpin it first.");
     const { error } = await supabase.from("memories").delete().eq("id", data.id);
     if (error) throw new Error(error.message);
     return { ok: true };
@@ -55,6 +58,8 @@ export const updateMemory = createServerFn({ method: "POST" })
   .handler(async ({ context, data }) => {
     const { supabase } = context;
     const { id, ...patch } = data;
+    const { data: existing } = await supabase.from("memories").select("pinned").eq("id", id).maybeSingle();
+    if (existing?.pinned) throw new Error("This memory is pinned. Unpin it first to edit.");
     const { data: row, error } = await supabase
       .from("memories")
       .update(patch)
@@ -65,3 +70,17 @@ export const updateMemory = createServerFn({ method: "POST" })
     return row;
   });
 
+export const togglePinMemory = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({ id: z.string().uuid(), pinned: z.boolean() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase } = context;
+    const { data: row, error } = await supabase
+      .from("memories")
+      .update({ pinned: data.pinned })
+      .eq("id", data.id)
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return row;
+  });

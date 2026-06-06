@@ -3,6 +3,50 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { buildSystemPrompt, type LovableMode } from "./personality";
 
+export const rateMessage = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({
+    messageId: z.string().uuid(),
+    conversationId: z.string().uuid(),
+    smile: z.boolean().optional(),
+    sentiment: z.number().int().min(-1).max(1).optional(),
+    note: z.string().max(500).optional(),
+  }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase, userId } = context;
+    const payload = {
+      user_id: userId,
+      message_id: data.messageId,
+      conversation_id: data.conversationId,
+      smile: data.smile ?? false,
+      sentiment: data.sentiment ?? 0,
+      note: data.note ?? null,
+    };
+    const { data: row, error } = await supabase
+      .from("message_feedback")
+      .upsert(payload, { onConflict: "message_id" })
+      .select()
+      .single();
+    if (error) throw new Error(error.message);
+    return row;
+  });
+
+
+export const listFeedbackForConversation = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator((d) => z.object({ conversationId: z.string().uuid() }).parse(d))
+  .handler(async ({ context, data }) => {
+    const { supabase } = context;
+    const { data: rows, error } = await supabase
+      .from("message_feedback")
+      .select("message_id,smile,sentiment,note")
+      .eq("conversation_id", data.conversationId);
+    if (error) throw new Error(error.message);
+    return rows ?? [];
+  });
+
+
+
 const MODEL = "google/gemini-3-flash-preview";
 const GATEWAY = "https://ai.gateway.lovable.dev/v1/chat/completions";
 

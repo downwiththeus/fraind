@@ -6,16 +6,17 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   listConversations, createConversation, getConversation, deleteConversation,
 } from "@/lib/conversations.functions";
-import { sendMessage, getCheckIn } from "@/lib/chat.functions";
-import { listMemories, addMemory, updateMemory, deleteMemory } from "@/lib/memories.functions";
+import { sendMessage, getCheckIn, rateMessage, listFeedbackForConversation } from "@/lib/chat.functions";
+import { listMemories, addMemory, updateMemory, deleteMemory, togglePinMemory } from "@/lib/memories.functions";
 import { listWonderReports, generateWonderReport } from "@/lib/wonder.functions";
-import { generateSparks, playSpark } from "@/lib/playground.functions";
+import { generateSparks, playSpark, shareSpark } from "@/lib/playground.functions";
 import { MODE_LABELS, type LovableMode } from "@/lib/personality";
 import {
   Plus, Trash2, Send, Sparkles, Brain, ScrollText, LogOut, MessageSquare,
-  ArrowLeft, Pencil, Check, X, Download, Wand2, FlaskConical,
+  ArrowLeft, Pencil, Check, X, Download, Wand2, FlaskConical, Smile, Frown, Meh, Pin, PinOff, Share2, Link2,
 } from "lucide-react";
 import { toast } from "sonner";
+
 
 export const Route = createFileRoute("/app")({
   component: AppPage,
@@ -37,10 +38,21 @@ function AppPage() {
     supabase.auth.getUser().then(({ data, error }) => {
       if (!mounted) return;
       if (error || !data.user) navigate({ to: "/auth" });
-      else setReady(true);
+      else {
+        setReady(true);
+        try {
+          const pending = localStorage.getItem("lovable.openConv");
+          if (pending) {
+            localStorage.removeItem("lovable.openConv");
+            setActiveConvId(pending);
+            setTab("chat");
+          }
+        } catch {}
+      }
     });
     return () => { mounted = false; };
   }, [navigate]);
+
 
   const listConvFn = useServerFn(listConversations);
   const createConvFn = useServerFn(createConversation);
@@ -236,6 +248,8 @@ function Welcome({ onStart }: { onStart: (m: LovableMode) => void }) {
 function ChatView({ conversationId, onBack }: { conversationId: string; onBack: () => void }) {
   const getConvFn = useServerFn(getConversation);
   const sendFn = useServerFn(sendMessage);
+  const listFbFn = useServerFn(listFeedbackForConversation);
+  const rateFn = useServerFn(rateMessage);
   const qc = useQueryClient();
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -245,6 +259,11 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
     queryFn: () => getConvFn({ data: { id: conversationId } }),
   });
 
+  const fbQ = useQuery({
+    queryKey: ["conversation-feedback", conversationId],
+    queryFn: () => listFbFn({ data: { conversationId } }),
+  });
+
   const sendMut = useMutation({
     mutationFn: (content: string) => sendFn({ data: { conversationId, content } }),
     onSuccess: () => {
@@ -252,6 +271,13 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
       qc.invalidateQueries({ queryKey: ["conversations"] });
       qc.invalidateQueries({ queryKey: ["memories"] });
     },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const rateMut = useMutation({
+    mutationFn: (p: { messageId: string; smile?: boolean; sentiment?: number; note?: string }) =>
+      rateFn({ data: { ...p, conversationId } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversation-feedback", conversationId] }),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -268,6 +294,21 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
   }
 
   const mode = (convQ.data?.conversation.mode || "companion") as LovableMode;
+  const seedId = (convQ.data?.conversation as any)?.seed_id as string | null | undefined;
+  const fbByMsg = new Map((fbQ.data ?? []).map((f) => [f.message_id, f]));
+
+  async function copySeedLink() {
+    if (!seedId) return;
+    try {
+      const { data, error } = await supabase.from("spark_seeds").select("slug").eq("id", seedId).maybeSingle();
+      if (error || !data) throw new Error("Couldn't find seed");
+      const url = `${window.location.origin}/spark/${data.slug}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("Spark link copied.");
+    } catch (e: any) {
+      toast.error(e.message || "Couldn't copy");
+    }
+  }
 
   return (
     <>
@@ -285,6 +326,15 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
             <p className="text-[10px] uppercase tracking-[0.25em] text-rose/70">{MODE_LABELS[mode].label} · {MODE_LABELS[mode].tag}</p>
           </div>
         </div>
+        {seedId && (
+          <button
+            onClick={copySeedLink}
+            className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-xs transition hover:bg-secondary/70"
+            title="Share this spark"
+          >
+            <Share2 className="h-3.5 w-3.5" /> Share spark
+          </button>
+        )}
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -293,7 +343,15 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
             <p className="text-center font-display italic text-muted-foreground">a blank page, and we're both curious</p>
           )}
           {convQ.data?.messages.map((m) => (
-            <MessageBubble key={m.id} role={m.role} content={m.content} />
+            <div key={m.id}>
+              <MessageBubble role={m.role} content={m.content} />
+              {m.role === "assistant" && (
+                <FeedbackBar
+                  feedback={fbByMsg.get(m.id) as any}
+                  onRate={(p) => rateMut.mutate({ messageId: m.id, ...p })}
+                />
+              )}
+            </div>
           ))}
           {sendMut.isPending && (
             <div className="fade-in-up">
@@ -328,6 +386,50 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
     </>
   );
 }
+
+function FeedbackBar({
+  feedback,
+  onRate,
+}: {
+  feedback?: { smile: boolean; sentiment: number; note: string | null };
+  onRate: (p: { smile?: boolean; sentiment?: number; note?: string }) => void;
+}) {
+  const smile = feedback?.smile ?? false;
+  const sentiment = feedback?.sentiment ?? 0;
+  return (
+    <div className="mt-2 flex items-center gap-1 pl-1 text-muted-foreground">
+      <button
+        onClick={() => onRate({ smile: !smile })}
+        title={smile ? "Unsmile" : "This made me smile"}
+        className={`rounded-full p-1.5 transition hover:bg-rose/10 ${smile ? "text-rose" : "hover:text-rose"}`}
+      >
+        <Smile className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === 1 ? 0 : 1 })}
+        title="Loved this"
+        className={`rounded-full p-1.5 transition hover:bg-rose/10 ${sentiment === 1 ? "text-rose" : "hover:text-rose"}`}
+      >
+        <span className="text-[11px] leading-none">♥</span>
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === 0 && !smile ? 0 : 0 })}
+        title="Neutral"
+        className={`rounded-full p-1.5 transition hover:bg-secondary/60 ${sentiment === 0 && !smile ? "text-foreground/60" : ""}`}
+      >
+        <Meh className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === -1 ? 0 : -1 })}
+        title="Missed the mark"
+        className={`rounded-full p-1.5 transition hover:bg-secondary/60 ${sentiment === -1 ? "text-foreground" : ""}`}
+      >
+        <Frown className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 
 function MessageBubble({ role, content }: { role: string; content: string }) {
   if (role === "user") {
@@ -369,13 +471,14 @@ function ThinkingDots() {
 
 /* ---------------- Memories ---------------- */
 
-type MemoryRow = { id: string; content: string; kind: string; importance: number };
+type MemoryRow = { id: string; content: string; kind: string; importance: number; pinned: boolean };
 
 function MemoriesView() {
   const listFn = useServerFn(listMemories);
   const addFn = useServerFn(addMemory);
   const updateFn = useServerFn(updateMemory);
   const delFn = useServerFn(deleteMemory);
+  const pinFn = useServerFn(togglePinMemory);
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["memories"], queryFn: () => listFn() });
 
@@ -390,10 +493,16 @@ function MemoriesView() {
   const delMut = useMutation({
     mutationFn: (id: string) => delFn({ data: { id } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["memories"] }),
+    onError: (e: Error) => toast.error(e.message),
   });
   const updMut = useMutation({
     mutationFn: (p: { id: string; content?: string; importance?: number }) => updateFn({ data: p }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["memories"] }),
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const pinMut = useMutation({
+    mutationFn: (p: { id: string; pinned: boolean }) => pinFn({ data: p }),
+    onSuccess: (_, vars) => { qc.invalidateQueries({ queryKey: ["memories"] }); toast.success(vars.pinned ? "Pinned & protected." : "Unpinned."); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -401,7 +510,7 @@ function MemoriesView() {
     <div className="flex-1 overflow-y-auto p-8">
       <div className="mx-auto max-w-3xl">
         <h2 className="font-display text-3xl">What I remember about you</h2>
-        <p className="mt-2 text-sm text-muted-foreground">Pieces I've gathered. Add, edit, or delete — your memory, your rules.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Pieces I've gathered. Pin the important ones — pinned memories can't be edited or deleted by accident.</p>
 
         <div className="ink-card mt-6 rounded-xl p-4">
           <textarea
@@ -440,6 +549,7 @@ function MemoriesView() {
               m={m as MemoryRow}
               onSave={(patch) => updMut.mutate({ id: m.id, ...patch })}
               onDelete={() => delMut.mutate(m.id)}
+              onTogglePin={() => pinMut.mutate({ id: m.id, pinned: !(m as MemoryRow).pinned })}
             />
           ))}
         </div>
@@ -448,14 +558,24 @@ function MemoriesView() {
   );
 }
 
-function MemoryItem({ m, onSave, onDelete }: { m: MemoryRow; onSave: (p: { content?: string; importance?: number }) => void; onDelete: () => void }) {
+function MemoryItem({ m, onSave, onDelete, onTogglePin }: {
+  m: MemoryRow;
+  onSave: (p: { content?: string; importance?: number }) => void;
+  onDelete: () => void;
+  onTogglePin: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(m.content);
   const [imp, setImp] = useState(m.importance);
 
   useEffect(() => { setContent(m.content); setImp(m.importance); }, [m.content, m.importance]);
 
-  if (editing) {
+  function confirmDelete() {
+    if (m.pinned) { toast.error("Unpin first to delete."); return; }
+    if (confirm("Forget this memory?")) onDelete();
+  }
+
+  if (editing && !m.pinned) {
     return (
       <div className="ink-card rounded-xl p-4 fade-in-up">
         <textarea
@@ -490,24 +610,47 @@ function MemoryItem({ m, onSave, onDelete }: { m: MemoryRow; onSave: (p: { conte
   }
 
   return (
-    <div className="ink-card group flex items-start justify-between gap-3 rounded-xl p-4 fade-in-up">
-      <div className="min-w-0">
-        <p className="text-sm leading-relaxed">{m.content}</p>
+    <div className={`ink-card group flex items-start justify-between gap-3 rounded-xl p-4 fade-in-up ${m.pinned ? "border-rose/40 bg-rose/[0.04]" : ""}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start gap-2">
+          {m.pinned && <Pin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />}
+          <p className="text-sm leading-relaxed">{m.content}</p>
+        </div>
         <p className="mt-1 text-[10px] uppercase tracking-wider text-rose/60">
-          {m.kind} · weight {m.importance}/5
+          {m.kind} · weight {m.importance}/5 {m.pinned && "· protected"}
         </p>
       </div>
-      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
-        <button onClick={() => setEditing(true)} title="Edit">
-          <Pencil className="h-4 w-4 text-muted-foreground hover:text-rose" />
+      <div className="flex shrink-0 gap-1">
+        <button
+          onClick={onTogglePin}
+          title={m.pinned ? "Unpin" : "Pin & protect"}
+          className={`transition ${m.pinned ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        >
+          {m.pinned
+            ? <PinOff className="h-4 w-4 text-rose hover:text-rose/70" />
+            : <Pin className="h-4 w-4 text-muted-foreground hover:text-rose" />}
         </button>
-        <button onClick={onDelete} title="Delete">
-          <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+        <button
+          onClick={() => { if (m.pinned) toast.error("Unpin first to edit."); else setEditing(true); }}
+          title={m.pinned ? "Pinned — unpin first" : "Edit"}
+          className={`transition opacity-0 group-hover:opacity-100 ${m.pinned ? "cursor-not-allowed" : ""}`}
+          disabled={m.pinned}
+        >
+          <Pencil className={`h-4 w-4 ${m.pinned ? "text-muted-foreground/40" : "text-muted-foreground hover:text-rose"}`} />
+        </button>
+        <button
+          onClick={confirmDelete}
+          title={m.pinned ? "Pinned — unpin first" : "Delete"}
+          className="transition opacity-0 group-hover:opacity-100"
+          disabled={m.pinned}
+        >
+          <Trash2 className={`h-4 w-4 ${m.pinned ? "text-muted-foreground/40" : "text-muted-foreground hover:text-destructive"}`} />
         </button>
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Idea Playground ---------------- */
 
@@ -524,6 +667,7 @@ const FLAVORS: { id: Flavor; label: string }[] = [
 function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
   const sparksFn = useServerFn(generateSparks);
   const playFn = useServerFn(playSpark);
+  const shareFn = useServerFn(shareSpark);
   const qc = useQueryClient();
   const [flavor, setFlavor] = useState<Flavor>("any");
   const [sparks, setSparks] = useState<{ title: string; prompt: string; tag: string }[]>([]);
@@ -535,11 +679,21 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
   });
 
   const playMut = useMutation({
-    mutationFn: (s: { title: string; prompt: string }) => playFn({ data: s }),
+    mutationFn: (s: { title: string; prompt: string; tag?: string }) => playFn({ data: s }),
     onSuccess: (conv) => {
       qc.invalidateQueries({ queryKey: ["conversations"] });
       onOpenConv(conv.id);
       toast.success("Let's play.");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const shareMut = useMutation({
+    mutationFn: (s: { title: string; prompt: string; tag?: string }) => shareFn({ data: s }),
+    onSuccess: (row) => {
+      const url = `${window.location.origin}/spark/${row.slug}`;
+      navigator.clipboard.writeText(url).catch(() => {});
+      toast.success("Share link copied.");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -550,7 +704,7 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
         <div className="flex items-end justify-between gap-4 flex-wrap">
           <div>
             <h2 className="font-display text-3xl">Idea Playground</h2>
-            <p className="mt-2 text-sm text-muted-foreground">Spark seeds — provocations to think with. Pick one and we'll yes-and from there.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Spark seeds — provocations to think with. Pick one to play, or share a link.</p>
           </div>
           <button
             onClick={() => genMut.mutate()}
@@ -586,27 +740,40 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
             </div>
           )}
           {sparks.map((s, i) => (
-            <button
+            <div
               key={i}
-              onClick={() => playMut.mutate({ title: s.title, prompt: s.prompt })}
-              disabled={playMut.isPending}
-              className="ink-card group rounded-xl p-5 text-left transition hover:border-rose/40 disabled:opacity-50"
+              className="ink-card group rounded-xl p-5 text-left transition hover:border-rose/40 flex flex-col"
             >
               <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-rose/70">
                 <Sparkles className="h-3 w-3" /> {s.tag}
               </div>
               <div className="mt-2 font-display text-lg">{s.title}</div>
-              <div className="mt-1 text-sm text-foreground/80 leading-relaxed">{s.prompt}</div>
-              <div className="mt-3 text-[11px] uppercase tracking-wider text-rose opacity-0 transition group-hover:opacity-100">
-                Play this →
+              <div className="mt-1 text-sm text-foreground/80 leading-relaxed flex-1">{s.prompt}</div>
+              <div className="mt-4 flex items-center justify-between gap-2">
+                <button
+                  onClick={() => shareMut.mutate({ title: s.title, prompt: s.prompt, tag: s.tag })}
+                  disabled={shareMut.isPending}
+                  className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/30 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground transition hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
+                  title="Copy share link"
+                >
+                  <Link2 className="h-3 w-3" /> Share
+                </button>
+                <button
+                  onClick={() => playMut.mutate({ title: s.title, prompt: s.prompt, tag: s.tag })}
+                  disabled={playMut.isPending}
+                  className="flex items-center gap-1.5 rounded-full bg-rose/20 px-3 py-1 text-[11px] uppercase tracking-wider text-rose transition hover:bg-rose/30 disabled:opacity-50"
+                >
+                  Play this →
+                </button>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Wonder Reports ---------------- */
 
