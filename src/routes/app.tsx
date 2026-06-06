@@ -38,10 +38,21 @@ function AppPage() {
     supabase.auth.getUser().then(({ data, error }) => {
       if (!mounted) return;
       if (error || !data.user) navigate({ to: "/auth" });
-      else setReady(true);
+      else {
+        setReady(true);
+        try {
+          const pending = localStorage.getItem("lovable.openConv");
+          if (pending) {
+            localStorage.removeItem("lovable.openConv");
+            setActiveConvId(pending);
+            setTab("chat");
+          }
+        } catch {}
+      }
     });
     return () => { mounted = false; };
   }, [navigate]);
+
 
   const listConvFn = useServerFn(listConversations);
   const createConvFn = useServerFn(createConversation);
