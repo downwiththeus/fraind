@@ -19,6 +19,7 @@ export type Database = {
           created_at: string
           id: string
           mode: string
+          seed_id: string | null
           title: string
           updated_at: string
           user_id: string
@@ -27,6 +28,7 @@ export type Database = {
           created_at?: string
           id?: string
           mode?: string
+          seed_id?: string | null
           title?: string
           updated_at?: string
           user_id: string
@@ -35,11 +37,20 @@ export type Database = {
           created_at?: string
           id?: string
           mode?: string
+          seed_id?: string | null
           title?: string
           updated_at?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "conversations_seed_id_fkey"
+            columns: ["seed_id"]
+            isOneToOne: false
+            referencedRelation: "spark_seeds"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       memories: {
         Row: {
@@ -48,6 +59,7 @@ export type Database = {
           id: string
           importance: number
           kind: string
+          pinned: boolean
           user_id: string
         }
         Insert: {
@@ -56,6 +68,7 @@ export type Database = {
           id?: string
           importance?: number
           kind?: string
+          pinned?: boolean
           user_id: string
         }
         Update: {
@@ -64,6 +77,40 @@ export type Database = {
           id?: string
           importance?: number
           kind?: string
+          pinned?: boolean
+          user_id?: string
+        }
+        Relationships: []
+      }
+      message_feedback: {
+        Row: {
+          conversation_id: string
+          created_at: string
+          id: string
+          message_id: string
+          note: string | null
+          sentiment: number
+          smile: boolean
+          user_id: string
+        }
+        Insert: {
+          conversation_id: string
+          created_at?: string
+          id?: string
+          message_id: string
+          note?: string | null
+          sentiment?: number
+          smile?: boolean
+          user_id: string
+        }
+        Update: {
+          conversation_id?: string
+          created_at?: string
+          id?: string
+          message_id?: string
+          note?: string | null
+          sentiment?: number
+          smile?: boolean
           user_id?: string
         }
         Relationships: []
@@ -118,6 +165,36 @@ export type Database = {
           created_at?: string
           display_name?: string | null
           user_id?: string
+        }
+        Relationships: []
+      }
+      spark_seeds: {
+        Row: {
+          created_at: string
+          id: string
+          owner_id: string
+          prompt: string
+          slug: string
+          tag: string | null
+          title: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          owner_id: string
+          prompt: string
+          slug: string
+          tag?: string | null
+          title: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          owner_id?: string
+          prompt?: string
+          slug?: string
+          tag?: string | null
+          title?: string
         }
         Relationships: []
       }
