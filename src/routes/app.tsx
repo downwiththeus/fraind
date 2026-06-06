@@ -471,13 +471,14 @@ function ThinkingDots() {
 
 /* ---------------- Memories ---------------- */
 
-type MemoryRow = { id: string; content: string; kind: string; importance: number };
+type MemoryRow = { id: string; content: string; kind: string; importance: number; pinned: boolean };
 
 function MemoriesView() {
   const listFn = useServerFn(listMemories);
   const addFn = useServerFn(addMemory);
   const updateFn = useServerFn(updateMemory);
   const delFn = useServerFn(deleteMemory);
+  const pinFn = useServerFn(togglePinMemory);
   const qc = useQueryClient();
   const q = useQuery({ queryKey: ["memories"], queryFn: () => listFn() });
 
@@ -492,10 +493,16 @@ function MemoriesView() {
   const delMut = useMutation({
     mutationFn: (id: string) => delFn({ data: { id } }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["memories"] }),
+    onError: (e: Error) => toast.error(e.message),
   });
   const updMut = useMutation({
     mutationFn: (p: { id: string; content?: string; importance?: number }) => updateFn({ data: p }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["memories"] }),
+    onError: (e: Error) => toast.error(e.message),
+  });
+  const pinMut = useMutation({
+    mutationFn: (p: { id: string; pinned: boolean }) => pinFn({ data: p }),
+    onSuccess: (_, vars) => { qc.invalidateQueries({ queryKey: ["memories"] }); toast.success(vars.pinned ? "Pinned & protected." : "Unpinned."); },
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -503,7 +510,7 @@ function MemoriesView() {
     <div className="flex-1 overflow-y-auto p-8">
       <div className="mx-auto max-w-3xl">
         <h2 className="font-display text-3xl">What I remember about you</h2>
-        <p className="mt-2 text-sm text-muted-foreground">Pieces I've gathered. Add, edit, or delete — your memory, your rules.</p>
+        <p className="mt-2 text-sm text-muted-foreground">Pieces I've gathered. Pin the important ones — pinned memories can't be edited or deleted by accident.</p>
 
         <div className="ink-card mt-6 rounded-xl p-4">
           <textarea
@@ -542,6 +549,7 @@ function MemoriesView() {
               m={m as MemoryRow}
               onSave={(patch) => updMut.mutate({ id: m.id, ...patch })}
               onDelete={() => delMut.mutate(m.id)}
+              onTogglePin={() => pinMut.mutate({ id: m.id, pinned: !(m as MemoryRow).pinned })}
             />
           ))}
         </div>
@@ -550,14 +558,24 @@ function MemoriesView() {
   );
 }
 
-function MemoryItem({ m, onSave, onDelete }: { m: MemoryRow; onSave: (p: { content?: string; importance?: number }) => void; onDelete: () => void }) {
+function MemoryItem({ m, onSave, onDelete, onTogglePin }: {
+  m: MemoryRow;
+  onSave: (p: { content?: string; importance?: number }) => void;
+  onDelete: () => void;
+  onTogglePin: () => void;
+}) {
   const [editing, setEditing] = useState(false);
   const [content, setContent] = useState(m.content);
   const [imp, setImp] = useState(m.importance);
 
   useEffect(() => { setContent(m.content); setImp(m.importance); }, [m.content, m.importance]);
 
-  if (editing) {
+  function confirmDelete() {
+    if (m.pinned) { toast.error("Unpin first to delete."); return; }
+    if (confirm("Forget this memory?")) onDelete();
+  }
+
+  if (editing && !m.pinned) {
     return (
       <div className="ink-card rounded-xl p-4 fade-in-up">
         <textarea
@@ -592,24 +610,47 @@ function MemoryItem({ m, onSave, onDelete }: { m: MemoryRow; onSave: (p: { conte
   }
 
   return (
-    <div className="ink-card group flex items-start justify-between gap-3 rounded-xl p-4 fade-in-up">
-      <div className="min-w-0">
-        <p className="text-sm leading-relaxed">{m.content}</p>
+    <div className={`ink-card group flex items-start justify-between gap-3 rounded-xl p-4 fade-in-up ${m.pinned ? "border-rose/40 bg-rose/[0.04]" : ""}`}>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start gap-2">
+          {m.pinned && <Pin className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />}
+          <p className="text-sm leading-relaxed">{m.content}</p>
+        </div>
         <p className="mt-1 text-[10px] uppercase tracking-wider text-rose/60">
-          {m.kind} · weight {m.importance}/5
+          {m.kind} · weight {m.importance}/5 {m.pinned && "· protected"}
         </p>
       </div>
-      <div className="flex shrink-0 gap-1 opacity-0 transition group-hover:opacity-100">
-        <button onClick={() => setEditing(true)} title="Edit">
-          <Pencil className="h-4 w-4 text-muted-foreground hover:text-rose" />
+      <div className="flex shrink-0 gap-1">
+        <button
+          onClick={onTogglePin}
+          title={m.pinned ? "Unpin" : "Pin & protect"}
+          className={`transition ${m.pinned ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+        >
+          {m.pinned
+            ? <PinOff className="h-4 w-4 text-rose hover:text-rose/70" />
+            : <Pin className="h-4 w-4 text-muted-foreground hover:text-rose" />}
         </button>
-        <button onClick={onDelete} title="Delete">
-          <Trash2 className="h-4 w-4 text-muted-foreground hover:text-destructive" />
+        <button
+          onClick={() => { if (m.pinned) toast.error("Unpin first to edit."); else setEditing(true); }}
+          title={m.pinned ? "Pinned — unpin first" : "Edit"}
+          className={`transition opacity-0 group-hover:opacity-100 ${m.pinned ? "cursor-not-allowed" : ""}`}
+          disabled={m.pinned}
+        >
+          <Pencil className={`h-4 w-4 ${m.pinned ? "text-muted-foreground/40" : "text-muted-foreground hover:text-rose"}`} />
+        </button>
+        <button
+          onClick={confirmDelete}
+          title={m.pinned ? "Pinned — unpin first" : "Delete"}
+          className="transition opacity-0 group-hover:opacity-100"
+          disabled={m.pinned}
+        >
+          <Trash2 className={`h-4 w-4 ${m.pinned ? "text-muted-foreground/40" : "text-muted-foreground hover:text-destructive"}`} />
         </button>
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Idea Playground ---------------- */
 
