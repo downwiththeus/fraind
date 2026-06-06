@@ -667,6 +667,7 @@ const FLAVORS: { id: Flavor; label: string }[] = [
 function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
   const sparksFn = useServerFn(generateSparks);
   const playFn = useServerFn(playSpark);
+  const shareFn = useServerFn(shareSpark);
   const qc = useQueryClient();
   const [flavor, setFlavor] = useState<Flavor>("any");
   const [sparks, setSparks] = useState<{ title: string; prompt: string; tag: string }[]>([]);
@@ -678,11 +679,21 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
   });
 
   const playMut = useMutation({
-    mutationFn: (s: { title: string; prompt: string }) => playFn({ data: s }),
+    mutationFn: (s: { title: string; prompt: string; tag?: string }) => playFn({ data: s }),
     onSuccess: (conv) => {
       qc.invalidateQueries({ queryKey: ["conversations"] });
       onOpenConv(conv.id);
       toast.success("Let's play.");
+    },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const shareMut = useMutation({
+    mutationFn: (s: { title: string; prompt: string; tag?: string }) => shareFn({ data: s }),
+    onSuccess: (row) => {
+      const url = `${window.location.origin}/spark/${row.slug}`;
+      navigator.clipboard.writeText(url).catch(() => {});
+      toast.success("Share link copied.");
     },
     onError: (e: Error) => toast.error(e.message),
   });
@@ -693,7 +704,7 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
         <div className="flex items-end justify-between gap-4 flex-wrap">
           <div>
             <h2 className="font-display text-3xl">Idea Playground</h2>
-            <p className="mt-2 text-sm text-muted-foreground">Spark seeds — provocations to think with. Pick one and we'll yes-and from there.</p>
+            <p className="mt-2 text-sm text-muted-foreground">Spark seeds — provocations to think with. Pick one to play, or share a link.</p>
           </div>
           <button
             onClick={() => genMut.mutate()}
@@ -729,27 +740,40 @@ function PlaygroundView({ onOpenConv }: { onOpenConv: (id: string) => void }) {
             </div>
           )}
           {sparks.map((s, i) => (
-            <button
+            <div
               key={i}
-              onClick={() => playMut.mutate({ title: s.title, prompt: s.prompt })}
-              disabled={playMut.isPending}
-              className="ink-card group rounded-xl p-5 text-left transition hover:border-rose/40 disabled:opacity-50"
+              className="ink-card group rounded-xl p-5 text-left transition hover:border-rose/40 flex flex-col"
             >
               <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-rose/70">
                 <Sparkles className="h-3 w-3" /> {s.tag}
               </div>
               <div className="mt-2 font-display text-lg">{s.title}</div>
-              <div className="mt-1 text-sm text-foreground/80 leading-relaxed">{s.prompt}</div>
-              <div className="mt-3 text-[11px] uppercase tracking-wider text-rose opacity-0 transition group-hover:opacity-100">
-                Play this →
+              <div className="mt-1 text-sm text-foreground/80 leading-relaxed flex-1">{s.prompt}</div>
+              <div className="mt-4 flex items-center justify-between gap-2">
+                <button
+                  onClick={() => shareMut.mutate({ title: s.title, prompt: s.prompt, tag: s.tag })}
+                  disabled={shareMut.isPending}
+                  className="flex items-center gap-1.5 rounded-full border border-border bg-secondary/30 px-3 py-1 text-[11px] uppercase tracking-wider text-muted-foreground transition hover:bg-secondary/70 hover:text-foreground disabled:opacity-50"
+                  title="Copy share link"
+                >
+                  <Link2 className="h-3 w-3" /> Share
+                </button>
+                <button
+                  onClick={() => playMut.mutate({ title: s.title, prompt: s.prompt, tag: s.tag })}
+                  disabled={playMut.isPending}
+                  className="flex items-center gap-1.5 rounded-full bg-rose/20 px-3 py-1 text-[11px] uppercase tracking-wider text-rose transition hover:bg-rose/30 disabled:opacity-50"
+                >
+                  Play this →
+                </button>
               </div>
-            </button>
+            </div>
           ))}
         </div>
       </div>
     </div>
   );
 }
+
 
 /* ---------------- Wonder Reports ---------------- */
 
