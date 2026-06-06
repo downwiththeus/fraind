@@ -6,16 +6,17 @@ import { supabase } from "@/integrations/supabase/client";
 import {
   listConversations, createConversation, getConversation, deleteConversation,
 } from "@/lib/conversations.functions";
-import { sendMessage, getCheckIn } from "@/lib/chat.functions";
-import { listMemories, addMemory, updateMemory, deleteMemory } from "@/lib/memories.functions";
+import { sendMessage, getCheckIn, rateMessage, listFeedbackForConversation } from "@/lib/chat.functions";
+import { listMemories, addMemory, updateMemory, deleteMemory, togglePinMemory } from "@/lib/memories.functions";
 import { listWonderReports, generateWonderReport } from "@/lib/wonder.functions";
-import { generateSparks, playSpark } from "@/lib/playground.functions";
+import { generateSparks, playSpark, shareSpark } from "@/lib/playground.functions";
 import { MODE_LABELS, type LovableMode } from "@/lib/personality";
 import {
   Plus, Trash2, Send, Sparkles, Brain, ScrollText, LogOut, MessageSquare,
-  ArrowLeft, Pencil, Check, X, Download, Wand2, FlaskConical,
+  ArrowLeft, Pencil, Check, X, Download, Wand2, FlaskConical, Smile, Frown, Meh, Pin, PinOff, Share2, Link2,
 } from "lucide-react";
 import { toast } from "sonner";
+
 
 export const Route = createFileRoute("/app")({
   component: AppPage,
