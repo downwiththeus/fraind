@@ -14,14 +14,14 @@ export const rateMessage = createServerFn({ method: "POST" })
   }).parse(d))
   .handler(async ({ context, data }) => {
     const { supabase, userId } = context;
-    const payload: Record<string, unknown> = {
+    const payload = {
       user_id: userId,
       message_id: data.messageId,
       conversation_id: data.conversationId,
+      smile: data.smile ?? false,
+      sentiment: data.sentiment ?? 0,
+      note: data.note ?? null,
     };
-    if (data.smile !== undefined) payload.smile = data.smile;
-    if (data.sentiment !== undefined) payload.sentiment = data.sentiment;
-    if (data.note !== undefined) payload.note = data.note;
     const { data: row, error } = await supabase
       .from("message_feedback")
       .upsert(payload, { onConflict: "message_id" })
@@ -30,6 +30,7 @@ export const rateMessage = createServerFn({ method: "POST" })
     if (error) throw new Error(error.message);
     return row;
   });
+
 
 export const listFeedbackForConversation = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
