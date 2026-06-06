@@ -248,6 +248,8 @@ function Welcome({ onStart }: { onStart: (m: LovableMode) => void }) {
 function ChatView({ conversationId, onBack }: { conversationId: string; onBack: () => void }) {
   const getConvFn = useServerFn(getConversation);
   const sendFn = useServerFn(sendMessage);
+  const listFbFn = useServerFn(listFeedbackForConversation);
+  const rateFn = useServerFn(rateMessage);
   const qc = useQueryClient();
   const [input, setInput] = useState("");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -257,6 +259,11 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
     queryFn: () => getConvFn({ data: { id: conversationId } }),
   });
 
+  const fbQ = useQuery({
+    queryKey: ["conversation-feedback", conversationId],
+    queryFn: () => listFbFn({ data: { conversationId } }),
+  });
+
   const sendMut = useMutation({
     mutationFn: (content: string) => sendFn({ data: { conversationId, content } }),
     onSuccess: () => {
@@ -264,6 +271,13 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
       qc.invalidateQueries({ queryKey: ["conversations"] });
       qc.invalidateQueries({ queryKey: ["memories"] });
     },
+    onError: (e: Error) => toast.error(e.message),
+  });
+
+  const rateMut = useMutation({
+    mutationFn: (p: { messageId: string; smile?: boolean; sentiment?: number; note?: string }) =>
+      rateFn({ data: { ...p, conversationId } }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversation-feedback", conversationId] }),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -280,6 +294,21 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
   }
 
   const mode = (convQ.data?.conversation.mode || "companion") as LovableMode;
+  const seedId = (convQ.data?.conversation as any)?.seed_id as string | null | undefined;
+  const fbByMsg = new Map((fbQ.data ?? []).map((f) => [f.message_id, f]));
+
+  async function copySeedLink() {
+    if (!seedId) return;
+    try {
+      const { data, error } = await supabase.from("spark_seeds").select("slug").eq("id", seedId).maybeSingle();
+      if (error || !data) throw new Error("Couldn't find seed");
+      const url = `${window.location.origin}/spark/${data.slug}`;
+      await navigator.clipboard.writeText(url);
+      toast.success("Spark link copied.");
+    } catch (e: any) {
+      toast.error(e.message || "Couldn't copy");
+    }
+  }
 
   return (
     <>
@@ -297,6 +326,15 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
             <p className="text-[10px] uppercase tracking-[0.25em] text-rose/70">{MODE_LABELS[mode].label} · {MODE_LABELS[mode].tag}</p>
           </div>
         </div>
+        {seedId && (
+          <button
+            onClick={copySeedLink}
+            className="flex items-center gap-2 rounded-full border border-border bg-secondary/40 px-3 py-1.5 text-xs transition hover:bg-secondary/70"
+            title="Share this spark"
+          >
+            <Share2 className="h-3.5 w-3.5" /> Share spark
+          </button>
+        )}
       </header>
 
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
@@ -305,7 +343,15 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
             <p className="text-center font-display italic text-muted-foreground">a blank page, and we're both curious</p>
           )}
           {convQ.data?.messages.map((m) => (
-            <MessageBubble key={m.id} role={m.role} content={m.content} />
+            <div key={m.id}>
+              <MessageBubble role={m.role} content={m.content} />
+              {m.role === "assistant" && (
+                <FeedbackBar
+                  feedback={fbByMsg.get(m.id) as any}
+                  onRate={(p) => rateMut.mutate({ messageId: m.id, ...p })}
+                />
+              )}
+            </div>
           ))}
           {sendMut.isPending && (
             <div className="fade-in-up">
@@ -340,6 +386,50 @@ function ChatView({ conversationId, onBack }: { conversationId: string; onBack: 
     </>
   );
 }
+
+function FeedbackBar({
+  feedback,
+  onRate,
+}: {
+  feedback?: { smile: boolean; sentiment: number; note: string | null };
+  onRate: (p: { smile?: boolean; sentiment?: number; note?: string }) => void;
+}) {
+  const smile = feedback?.smile ?? false;
+  const sentiment = feedback?.sentiment ?? 0;
+  return (
+    <div className="mt-2 flex items-center gap-1 pl-1 text-muted-foreground">
+      <button
+        onClick={() => onRate({ smile: !smile })}
+        title={smile ? "Unsmile" : "This made me smile"}
+        className={`rounded-full p-1.5 transition hover:bg-rose/10 ${smile ? "text-rose" : "hover:text-rose"}`}
+      >
+        <Smile className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === 1 ? 0 : 1 })}
+        title="Loved this"
+        className={`rounded-full p-1.5 transition hover:bg-rose/10 ${sentiment === 1 ? "text-rose" : "hover:text-rose"}`}
+      >
+        <span className="text-[11px] leading-none">♥</span>
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === 0 && !smile ? 0 : 0 })}
+        title="Neutral"
+        className={`rounded-full p-1.5 transition hover:bg-secondary/60 ${sentiment === 0 && !smile ? "text-foreground/60" : ""}`}
+      >
+        <Meh className="h-3.5 w-3.5" />
+      </button>
+      <button
+        onClick={() => onRate({ sentiment: sentiment === -1 ? 0 : -1 })}
+        title="Missed the mark"
+        className={`rounded-full p-1.5 transition hover:bg-secondary/60 ${sentiment === -1 ? "text-foreground" : ""}`}
+      >
+        <Frown className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 
 function MessageBubble({ role, content }: { role: string; content: string }) {
   if (role === "user") {
