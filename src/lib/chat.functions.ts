@@ -133,10 +133,12 @@ export const sendMessage = createServerFn({ method: "POST" })
     await supabase.from("conversations").update(updates).eq("id", data.conversationId);
 
     // Fire-and-forget memory extraction (don't block the response)
-    extractMemories(apiKey, supabase, userId, data.content, reply).catch((e) => console.error("memory extract", e));
+    extractMemories(apiKey, supabase, userId, data.content, reply, memories).catch((e) => console.error("memory extract", e));
 
     return { message: assistantRow };
   });
+
+const MEMORY_KINDS = ["preference", "interest", "value", "context", "project", "relationship", "humor", "fact"] as const;
 
 async function extractMemories(
   apiKey: string,
@@ -144,8 +146,30 @@ async function extractMemories(
   userId: string,
   userMsg: string,
   assistantMsg: string,
+  existingMemories: { content: string }[],
 ) {
-  const prompt = `From this exchange, extract 0-3 SHORT durable facts about the USER worth remembering long-term (preferences, values, interests, life context, humor style, inside-jokes, ongoing projects). Skip ephemeral details. Return JSON.
+  const existingBlock = existingMemories.slice(0, 60).map((m) => `- ${m.content}`).join("\n") || "(none yet)";
+  const prompt = `From this exchange, extract 0-3 NEW durable facts about the USER worth remembering long-term.
+
+Categories to look for:
+- preference (how they like things done, communication style)
+- interest (topics, fields, hobbies they care about)
+- value (what matters to them ethically/philosophically)
+- context (life situation: work, relationships, location, season of life)
+- project (ongoing work, creative, or personal endeavors)
+- relationship (named people in their life, dynamics)
+- humor (their comedic sensibility, inside-jokes)
+- fact (anything else durable that doesn't fit above)
+
+CRITICAL RULES:
+- Skip ephemeral details (mood today, weather, one-off questions).
+- DO NOT restate anything already in EXISTING MEMORIES below — only add genuinely new information or meaningful refinements.
+- Be terse. Third-person. e.g. "Prefers dry humor over puns." or "Working on a novel about grief."
+- importance: 5 = identity-defining, 3 = solid preference/interest, 1 = minor detail.
+- If nothing new is worth saving, return an empty array.
+
+EXISTING MEMORIES (do not duplicate):
+${existingBlock}
 
 USER said: ${userMsg.slice(0, 1500)}
 LOVABLE replied: ${assistantMsg.slice(0, 1500)}`;
@@ -160,7 +184,7 @@ LOVABLE replied: ${assistantMsg.slice(0, 1500)}`;
         type: "function",
         function: {
           name: "save_memories",
-          description: "Save durable facts about the user.",
+          description: "Save NEW durable facts about the user. Empty array if nothing novel.",
           parameters: {
             type: "object",
             properties: {
@@ -169,10 +193,11 @@ LOVABLE replied: ${assistantMsg.slice(0, 1500)}`;
                 items: {
                   type: "object",
                   properties: {
-                    content: { type: "string", description: "Short third-person fact, e.g. 'Loves emergence in complex systems'." },
+                    content: { type: "string", description: "Short third-person fact." },
+                    kind: { type: "string", enum: [...MEMORY_KINDS] },
                     importance: { type: "integer", minimum: 1, maximum: 5 },
                   },
-                  required: ["content", "importance"],
+                  required: ["content", "kind", "importance"],
                   additionalProperties: false,
                 },
               },
@@ -191,11 +216,23 @@ LOVABLE replied: ${assistantMsg.slice(0, 1500)}`;
   if (!call) return;
   try {
     const args = JSON.parse(call.function.arguments);
-    const items = (args.memories ?? []).filter((m: any) => m?.content?.length > 3).slice(0, 3);
-    if (!items.length) return;
-    await supabase.from("memories").insert(items.map((m: any) => ({
+    const raw = (args.memories ?? []).filter((m: any) => m?.content?.length > 3).slice(0, 3);
+    if (!raw.length) return;
+    // Client-side fuzzy dedupe against existing
+    const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, "").split(/\s+/).filter(Boolean);
+    const existingTokens = existingMemories.map((m) => new Set(norm(m.content)));
+    const fresh = raw.filter((m: any) => {
+      const tokens = new Set(norm(m.content));
+      return !existingTokens.some((eT) => {
+        const overlap = [...tokens].filter((t) => eT.has(t)).length;
+        const denom = Math.max(tokens.size, eT.size, 1);
+        return overlap / denom > 0.6;
+      });
+    });
+    if (!fresh.length) return;
+    await supabase.from("memories").insert(fresh.map((m: any) => ({
       user_id: userId,
-      kind: "fact",
+      kind: MEMORY_KINDS.includes(m.kind) ? m.kind : "fact",
       content: m.content.slice(0, 400),
       importance: Math.min(5, Math.max(1, m.importance || 3)),
     })));
@@ -203,6 +240,7 @@ LOVABLE replied: ${assistantMsg.slice(0, 1500)}`;
     console.error("parse memories", e);
   }
 }
+
 
 /** Generate a proactive check-in suggestion for the dashboard. */
 export const getCheckIn = createServerFn({ method: "GET" })
