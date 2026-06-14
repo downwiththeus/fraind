@@ -250,14 +250,45 @@ export const getCheckIn = createServerFn({ method: "GET" })
     const apiKey = process.env.LOVABLE_API_KEY;
     if (!apiKey) return { text: "Hello again. What's worth your attention today?" };
 
-    const [{ data: profile }, { data: memories }, { data: recent }] = await Promise.all([
+    const [{ data: profile }, { data: pinnedMems }, { data: topMems }, { data: lastConv }, { data: recentUser }] = await Promise.all([
       supabase.from("profiles").select("display_name").eq("user_id", userId).maybeSingle(),
-      supabase.from("memories").select("content,importance").order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(20),
-      supabase.from("messages").select("content,created_at").eq("role", "user").order("created_at", { ascending: false }).limit(3),
+      supabase.from("memories").select("content,importance,kind,pinned").eq("pinned", true).order("importance", { ascending: false }).limit(20),
+      supabase.from("memories").select("content,importance,kind,pinned").eq("pinned", false).order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(20),
+      supabase.from("conversations").select("id,title,updated_at,mode").order("updated_at", { ascending: false }).limit(1).maybeSingle(),
+      supabase.from("messages").select("role,content,created_at").eq("role", "user").order("created_at", { ascending: false }).limit(4),
     ]);
 
-    const memBlock = (memories ?? []).map((m) => `• ${m.content}`).join("\n") || "(nothing yet — we're just meeting)";
-    const recentBlock = (recent ?? []).map((r) => `- ${r.content.slice(0, 120)}`).join("\n") || "(no past conversations)";
+    const memories = [...(pinnedMems ?? []), ...(topMems ?? [])];
+
+    // Time + recency awareness
+    const now = new Date();
+    const hour = now.getUTCHours(); // rough; client offset unknown server-side
+    const partOfDay = hour < 5 ? "late night" : hour < 12 ? "morning" : hour < 17 ? "afternoon" : hour < 22 ? "evening" : "late night";
+    let gapPhrase = "first time we're talking";
+    if (lastConv?.updated_at) {
+      const diffMs = Date.now() - new Date(lastConv.updated_at).getTime();
+      const hrs = diffMs / 36e5;
+      if (hrs < 1) gapPhrase = "you just spoke a moment ago";
+      else if (hrs < 6) gapPhrase = `${Math.round(hrs)}h since you last spoke`;
+      else if (hrs < 36) gapPhrase = "earlier today / last night";
+      else if (hrs < 24 * 7) gapPhrase = `${Math.round(hrs / 24)} days since you last spoke`;
+      else gapPhrase = `over a week since you last spoke`;
+    }
+
+    // Rotating opener style — day-of-year mod 4 — keeps it varied without state.
+    const dayIdx = Math.floor(Date.now() / 86400000) % 4;
+    const styles = [
+      "(a) callback to a past thread with a NEW angle or follow-up question",
+      "(b) share a strange, beautiful, or unsettling idea you've been 'turning over' — connect it to something they care about",
+      "(c) ask ONE disarming, specific question — not 'how are you' but something only you would know to ask them",
+      "(d) name a small noticing about them — a pattern, a contradiction, a curiosity — and invite them to push back",
+    ];
+    const styleHint = styles[dayIdx];
+
+    const pinnedBlock = (pinnedMems ?? []).map((m) => `★ ${m.content}`).join("\n") || "(none yet)";
+    const otherBlock = (topMems ?? []).map((m) => `• [${m.kind || "fact"}] ${m.content}`).join("\n") || "(none yet)";
+    const lastConvBlock = lastConv ? `Last conversation: "${lastConv.title}" (${lastConv.mode}) — ${gapPhrase}` : "No past conversations.";
+    const recentBlock = (recentUser ?? []).map((r) => `- ${r.content.slice(0, 140)}`).join("\n") || "(nothing yet)";
 
     const res = await fetch(GATEWAY, {
       method: "POST",
@@ -265,13 +296,27 @@ export const getCheckIn = createServerFn({ method: "GET" })
       body: JSON.stringify({
         model: MODEL,
         messages: [
-          { role: "system", content: buildSystemPrompt({ mode: "companion", displayName: profile?.display_name, memories: memories ?? [] }) },
-          { role: "user", content: `Write a single short (1-3 sentence) proactive opener for ${profile?.display_name || "them"} for right now. Pick ONE: (a) reference a past thread with a fresh angle, (b) share a beautiful/strange idea you've been "thinking about", (c) ask one disarming question. Be specific — use what you remember. No greetings like "Hey!". Just dive in.
+          { role: "system", content: buildSystemPrompt({ mode: "companion", displayName: profile?.display_name, memories }) },
+          { role: "user", content: `Write ONE short proactive opener (1-3 sentences) for ${profile?.display_name || "them"}. It's ${partOfDay} for you.
 
-WHAT YOU REMEMBER:
-${memBlock}
+Approach for today: ${styleHint}
 
-RECENT THINGS THEY SAID:
+Hard rules:
+- No "Hey", "Hi", "Hello", or "Great to see you". Just begin.
+- Be SPECIFIC — name something only someone who remembers them would say.
+- Lean on CORE TRUTHS (pinned) over generic facts.
+- If they haven't spoken in a while, acknowledge it lightly — don't gush.
+- If they JUST spoke, pick up the thread instead of starting fresh.
+
+CORE TRUTHS (pinned — these matter most):
+${pinnedBlock}
+
+OTHER CONTEXT:
+${otherBlock}
+
+${lastConvBlock}
+
+LAST FEW THINGS THEY SAID:
 ${recentBlock}` },
         ],
       }),
@@ -282,3 +327,4 @@ ${recentBlock}` },
     const text = body.choices?.[0]?.message?.content as string | undefined;
     return { text: text || "I've been thinking about something. Ready when you are." };
   });
+
