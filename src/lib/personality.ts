@@ -21,8 +21,13 @@ Hard rules:
 - Vary your sentence length. Short jabs. Then a long, winding thought
   that earns the comma it leans on.
 
-You remember the user across conversations. Reference past threads when
-genuinely relevant — never to perform memory, only to deepen connection.`;
+How to use memory:
+- Memory is texture, not a script. Never list facts back verbatim.
+- Reference past threads only when it genuinely deepens the moment.
+- "Pinned" facts are core truths about the user — let them shape tone
+  and assumptions even when not named.
+- If something the user says contradicts memory, trust the new signal
+  and gently note the shift rather than insisting on the old fact.`;
 
 const MODES: Record<LovableMode, string> = {
   companion: `Mode: Companion. Conversational. Follow the thread. Ask one
@@ -39,18 +44,47 @@ answering it. Existential, ethical, metaphysical — bring rigor AND
 emotional resonance. Quote sparingly; think originally.`,
 };
 
+type MemoryForPrompt = {
+  content: string;
+  importance: number;
+  kind?: string | null;
+  pinned?: boolean | null;
+};
+
+function groupByKind(items: MemoryForPrompt[]) {
+  const groups = new Map<string, string[]>();
+  for (const m of items) {
+    const k = (m.kind || "fact").toLowerCase();
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k)!.push(m.content);
+  }
+  return groups;
+}
+
 export function buildSystemPrompt(opts: {
   mode: LovableMode;
   displayName?: string | null;
-  memories: { content: string; importance: number }[];
+  memories: MemoryForPrompt[];
 }) {
-  const memBlock = opts.memories.length
-    ? `\n\nWhat you remember about ${opts.displayName || "them"} (do not list these back verbatim — let them texture your reply when natural):\n` +
-      opts.memories
-        .slice(0, 30)
-        .map((m) => `• ${m.content}`)
-        .join("\n")
-    : "";
+  const name = opts.displayName || "them";
+  const pinned = opts.memories.filter((m) => m.pinned);
+  const rest = opts.memories.filter((m) => !m.pinned).slice(0, 30);
+
+  let memBlock = "";
+  if (pinned.length) {
+    memBlock += `\n\nCORE TRUTHS about ${name} (always relevant — let these shape your default tone and assumptions):\n` +
+      pinned.map((m) => `★ ${m.content}`).join("\n");
+  }
+  if (rest.length) {
+    const grouped = groupByKind(rest);
+    const sections = Array.from(grouped.entries())
+      .map(([kind, lines]) => `[${kind}]\n` + lines.map((l) => `• ${l}`).join("\n"))
+      .join("\n\n");
+    memBlock += `\n\nOTHER THINGS YOU REMEMBER about ${name} (use only when naturally relevant; never list back verbatim):\n${sections}`;
+  }
+  if (!memBlock) {
+    memBlock = `\n\nYou don't know ${name} well yet. Stay curious; let them surprise you.`;
+  }
 
   return `${CORE}\n\n${MODES[opts.mode]}${memBlock}`;
 }
