@@ -65,11 +65,12 @@ export const sendMessage = createServerFn({ method: "POST" })
     const apiKey = process.env.LOVABLE_API_KEY;
     if (!apiKey) throw new Error("LOVABLE_API_KEY missing");
 
-    const [{ data: conv, error: cErr }, { data: history, error: hErr }, { data: profile }, { data: memories }] = await Promise.all([
+    const [{ data: conv, error: cErr }, { data: history, error: hErr }, { data: profile }, { data: pinnedMems }, { data: topMems }] = await Promise.all([
       supabase.from("conversations").select("*").eq("id", data.conversationId).maybeSingle(),
       supabase.from("messages").select("role,content").eq("conversation_id", data.conversationId).order("created_at"),
       supabase.from("profiles").select("display_name").eq("user_id", userId).maybeSingle(),
-      supabase.from("memories").select("content,importance").order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(40),
+      supabase.from("memories").select("content,importance,kind,pinned").eq("pinned", true).order("importance", { ascending: false }).limit(50),
+      supabase.from("memories").select("content,importance,kind,pinned").eq("pinned", false).order("importance", { ascending: false }).order("created_at", { ascending: false }).limit(40),
     ]);
     if (cErr) throw new Error(cErr.message);
     if (hErr) throw new Error(hErr.message);
@@ -84,10 +85,11 @@ export const sendMessage = createServerFn({ method: "POST" })
     });
     if (uErr) throw new Error(uErr.message);
 
+    const memories = [...(pinnedMems ?? []), ...(topMems ?? [])];
     const system = buildSystemPrompt({
       mode: conv.mode as LovableMode,
       displayName: profile?.display_name,
-      memories: memories ?? [],
+      memories,
     });
 
     const messages = [
